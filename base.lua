@@ -67,6 +67,11 @@ function g_make_deterministic(seed)
   torch.zeros(1, 1):cuda():uniform()
 end
 
+function g_set_gpu(id)
+    cutorch.setDevice(id)
+    g_make_deterministic(1)
+end
+
 function g_replace_table(to, from)
   assert(#to == #from)
   for i = 1, #to do
