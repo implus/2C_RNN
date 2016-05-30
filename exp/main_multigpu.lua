@@ -167,7 +167,6 @@ local function reset_ds(model)
 end
 
 local function fp(models, state) -- !! make sure label responds to model, fill the right label before using it
-    local err_sum = 0.0
     for m = 1, #models do -- all model go
         g_set_gpu(m) -- pay attention to set gpu for :cuda() to move
         local model = models[m]
@@ -186,6 +185,11 @@ local function fp(models, state) -- !! make sure label responds to model, fill t
             poses[m] = poses[m] + 1
         end
         g_replace_table(model.start_s, model.s[params.seq_length])
+    end
+
+    local err_sum = 0.0
+    for m = 1, #models do
+        local model = models[m]
         err_sum = err_sum + model.err:mean() + model.err_r:mean()
     end
     return err_sum / GPUs 
@@ -193,8 +197,8 @@ end
 
 local function bp(models, state)
     for m = 1, #models do
-        local model = models[m]
         g_set_gpu(m) -- pay attention to set gpu for :cuda() to move
+        local model = models[m]
         local paramdx = model.paramdx
         local paramx  = model.paramx
         paramdx:zero() reset_ds(model)
@@ -216,8 +220,8 @@ local function bp(models, state)
     cutorch.synchronizeAll()
 
     -- todo !!!! every minibatch*seq_length to update
-    local sumparamdx = models[1].paramdx
     g_set_gpu(1)
+    local sumparamdx = models[1].paramdx
     local tmpparamdx = torch.CudaTensor(sumparamdx:size())
     for m = 2, #models do
         local model = models[m]
@@ -407,11 +411,9 @@ local function training(models, round)
 
             if params.lr < params.minlr then break end
 
-            cutorch.synchronize()
-            collectgarbage()
         end
         
-        --if step % 33 == 0 then cutorch.synchronizeAll() collectgarbage() end
+        if step % 33 == 0 then cutorch.synchronizeAll() collectgarbage() end
     end
     print("running test ...")
 end
@@ -578,14 +580,13 @@ local function gao()
     state_test  = {original = ptb.testdataset2batch(test_vec,   params.batch_size), vec = test_vec,  }
     if not path.exists('./models/') then lfs.mkdir('./models/') end
 
-    local step_add = torch.floor(state_train.original:size(1) / GPUs)
+    local step_add = torch.floor((state_train.original:size(1) - 1) / GPUs)
 
     for g = 1, GPUs do
         local model = {}
         traininit(model, 'model init, using gpu '..g, g, step_add)
         table.insert(models, model)
     end
-
 
     for round = 0, 10000 do -- 0 is first init mapx, mapy to run
         print("------------------------------- round "..round.." begin!! ---------------------------------")
