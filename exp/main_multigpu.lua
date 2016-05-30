@@ -150,12 +150,14 @@ local function setup(model, str, g, step_add) -- we need to know which model, an
     model.norm_dw = 0
     model.err = transfer_data(torch.zeros(params.seq_length))
     model.err_r = transfer_data(torch.zeros(params.seq_length))
-    model.pos   = 0 + (g - 1) * step_add
-    model.start_pos = 0 + (g - 1) * step_add
+    model.pos   = 1 + (g - 1) * step_add
+    model.start_pos = 1 + (g - 1) * step_add
 end
 
-local function reset_state(model)
-    if model ~= nil and model.start_s ~= nil then for d = 1, 2 * params.layers do model.start_s[d]:zero() end end
+local function reset_state(model, g)
+    g_set_gpu(g)
+    if model ~= nil and model.start_s ~= nil then 
+        for d = 1, 2 * params.layers do model.start_s[d]:zero() end end
 end
 local function reset_ds(model)
     for d = 1, #model.ds do model.ds[d]:zero() end
@@ -166,8 +168,9 @@ local function fp(models, state) -- !! make sure label responds to model, fill t
     for m = 1, #models do -- all model go
         g_set_gpu(m) -- pay attention to set gpu for :cuda() to move
         local model = models[m]
+        --print('model '..m..' init pos = '..model.pos)
         if model.pos + params.seq_length > state.data:size(1) then
-            reset_state(model) -- model.pos = 1 -- for recursive
+            reset_state(model, m) -- model.pos = 1 -- for recursive
             model.pos = 1
         end
         g_replace_table(model.s[0], model.start_s)
@@ -182,6 +185,7 @@ local function fp(models, state) -- !! make sure label responds to model, fill t
         end
         g_replace_table(model.start_s, model.s[params.seq_length])
         err_sum = err_sum + model.err:mean() + model.err_r:mean()
+        --print('model '..m..' pass')
     end
     return err_sum / #models
 end
@@ -212,10 +216,13 @@ local function bp(models, state)
 
     -- todo !!!! every minibatch*seq_length to update
     local sumparamdx = models[1].paramdx
+    g_set_gpu(1)
+    local tmpparamdx = torch.CudaTensor(sumparamdx:size())
     for m = 2, #models do
         local model = models[m]
         local paramdx = model.paramdx
-        sumparamdx:add(paramdx)
+        tmpparamdx:copy(paramdx)
+        sumparamdx:add(tmpparamdx)
         --[[
         model.norm_dw = paramdx:norm()
         if model.norm_dw > params.max_grad_norm then
@@ -226,30 +233,38 @@ local function bp(models, state)
         ]]
     end
 
-    local norm_dw = sumparamdx:norm()
+    sumparamdx:mul(1.0/GPUs)
+    models[1].norm_dw = sumparamdx:norm()
+    local norm_dw = models[1].norm_dw
     if norm_dw > params.max_grad_norm then
         local shrink_factor = params.max_grad_norm / norm_dw
         sumparamdx:mul(shrink_factor)
     end
-    
-    -- spread all to GPUS
+
+    local model_1 = models[1]
+    local paramx_1 = model_1.paramx
+    paramx_1:add(sumparamdx:mul(-params.lr))
+    -- spread all to GPUs
     for m = 1, #models do
-        local mode = models[m]
+        local model = models[m]
+        g_set_gpu(m)
         local paramx = model.paramx
-        paramx:add(sumparamdx:mul(-params.lr))
+        paramx:copy(paramx_1)
     end
 end
 
 local function run_valid(model, state) -- models[1]
+    print("run valid...")
     g_set_gpu(1)
     g_replace_table(model.ds, model.start_s) -- for store start_s
     g_disable_dropout(model.rnns)
     local len = (state.data:size(1) - 1) / (params.seq_length)
     local perp = 0
+    reset_state(model, 1)
     state.pos = 1
-    for i = 1, len do
+    for j = 1, len do
         g_replace_table(model.s[0], model.start_s)
-        for j = 1, params.seq_length do
+        for i = 1, params.seq_length do
             local x =   torch.floor(state.data[state.pos] / jinzhi):cuda()
             local x_r = torch.mod(state.data[state.pos]:int(), jinzhi):cuda()
             local y =   x_r
@@ -270,21 +285,25 @@ end
 
 local function run_test(model) -- models[1]
     g_set_gpu(1)
+    g_replace_table(model.ds, model.start_s) -- for store start_s
     g_disable_dropout(model.rnns)
     local perp = 0
     local len = state_test.data:size(1)
+
+    reset_state(model, 1)
     g_replace_table(model.s[0], model.start_s)
     for i = 1, (len - 1), 1 do
-        local x = torch.floor(state_test.data[i] / jinzhi)
+        local x = torch.floor(state_test.data[i] / jinzhi):cuda()
         local x_r = torch.mod(state_test.data[i]:int(), jinzhi):cuda()
         local y =   x_r
-        local y_r = torch.floor(state_test.data[i + 1] / jinzhi)
+        local y_r = torch.floor(state_test.data[i + 1] / jinzhi):cuda()
         perp_tmp, perp_tmp_r, model.s[1] = unpack(model.rnns[1]:forward({x, y, model.s[0], x_r, y_r}))
         perp = perp + perp_tmp[1] + perp_tmp_r[1]
         g_replace_table(model.s[0], model.s[1])
     end
     print("Test set perplexity : " .. g_f3(torch.exp(perp / (len - 1))))
     g_enable_dropout(model.rnns)
+    g_replace_table(model.start_s, model.ds) -- save back to model.start_s
     return g_f3(torch.exp(perp / (len - 1)))
 end
 
@@ -297,8 +316,10 @@ local function traininit(model, str, g, step_add)
 end
 local function datastateinit()
     print("data state init")
-    local states = {state_train, state_valid, state_test}
-    for _, state in pairs(states) do reset_state(model) model.pos = model.start_pos end
+    for m = 1, #models do
+        local model = models[m]
+        reset_state(model, m) model.pos = model.start_pos 
+    end
 end
 local function data_prepare(mapx, mapy)
     print("data prepare")
@@ -311,8 +332,6 @@ end
 
 local function training(models, round)
     -- if loading from file, these must be added
-    local paramx = model.paramx
-    local paramdx = model.paramdx
     params.lr  = params.start_lr-- for new start, adjust lr -> 1.0
     collectgarbage()
 
@@ -321,13 +340,14 @@ local function training(models, round)
     local start_time = torch.tic()
     print("Starting training.")
     local words_per_step = params.seq_length * params.batch_size * GPUs
-    local epoch_size = torch.floor(state_train.data:size(1) / params.seq_length)
+    local epoch_size = torch.floor(state_train.data:size(1) / params.seq_length / GPUs)
     local perps
     local last_valid_perp = 11111111111111111111111111111
     local last_train_perp = 11111111111111111111111111111
     local last_checkpoint = {} local checkpoint = {}
     local last_delete_file
     local step = 0 local epoch = 0
+
 
     while epoch < params.max_max_epoch do
         local perp = fp(models, state_train)
@@ -350,19 +370,19 @@ local function training(models, round)
             print('epoch = ' .. g_f3(epoch) ..
             ', train perp. = ' .. g_f3(torch.exp(perps:mean())) ..
             ', wps = ' .. wps ..
-            ', dw:norm() = ' .. g_f3(model.norm_dw) ..
+            ', dw:norm() = ' .. g_f3(models[1].norm_dw) ..
             ', lr = ' ..  g_f3(params.lr) ..
             ', since beginning = ' .. since_beginning .. ' mins.')
         end
         if step % epoch_size == 0 then
             -- first let's see one epoch change
-            local new_valid_perp = run_valid(models[1])
+            local new_valid_perp = run_valid(models[1], state_valid)
             if new_valid_perp > last_valid_perp + params.tolerance or epoch > params.max_epoch then  -- or params.lr < params.minlr  then --or step / epoch_size > 1.0 then -- !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! for fast check, later delete
                 params.lr = params.lr / params.decay
             end
             last_valid_perp = new_valid_perp
 
-            checkpoint.model    = model 
+            checkpoint.model    = models[1] 
             checkpoint.params   = params 
             checkpoint.mapx     = mapx
             checkpoint.mapy     = mapy
@@ -371,7 +391,8 @@ local function training(models, round)
 
             -- for save every epoch
             print("running test...")
-            local test_perp = run_test(models[1])
+            --local test_perp = run_test(models[1])
+            local test_perp = last_valid_perp -- final to run test
             checkpoint.savefile = "./models/" .. checkpoint.savefile ..".test"..test_perp.. ".model.t7"
             torch.save(checkpoint.savefile, checkpoint)
             print("saving ".. checkpoint.savefile)
@@ -381,12 +402,11 @@ local function training(models, round)
             last_delete_file = checkpoint.savefile
 
             if params.lr < params.minlr then break end
-        end
-        
-        if step % 33 == 0 then
             cutorch.synchronizeAll()
             collectgarbage()
         end
+        
+        --if step % 33 == 0 then cutorch.synchronizeAll() collectgarbage() end
     end
     print("running test ...")
 end
@@ -398,7 +418,7 @@ local function updatebest_c(model, info, round, state) -- models[1]
     local proby = torch.zeros(params.vocab_size, params.vocab_code)
 
     g_set_gpu(1)
-    reset_state(model)
+    reset_state(model, 1)
     state.pos = 1
     g_disable_dropout(model.rnns)
     local len = (state.data:size(1) - 1) / (params.seq_length)
