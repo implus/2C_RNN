@@ -48,6 +48,7 @@ local models = {}
 local idx2word, idx2cnt 
 local train_vec, valid_vec, test_vec, check_conflict, vec_mapping
 local mapx = {} local mapy = {}
+local poses = {} start_poses = {}
 
 local function lstm(x, x_r, prev_c, prev_h )
     -- Calculate all four gates in one go
@@ -150,8 +151,10 @@ local function setup(model, str, g, step_add) -- we need to know which model, an
     model.norm_dw = 0
     model.err = transfer_data(torch.zeros(params.seq_length))
     model.err_r = transfer_data(torch.zeros(params.seq_length))
-    model.pos   = 1 + (g - 1) * step_add
-    model.start_pos = 1 + (g - 1) * step_add
+    poses[g] = 1 + (g - 1) * step_add
+    start_poses[g] = 1 + (g - 1) * step_add
+    --model.pos   = 1 + (g - 1) * step_add
+    --model.start_pos = 1 + (g - 1) * step_add
 end
 
 local function reset_state(model, g)
@@ -168,26 +171,24 @@ local function fp(models, state) -- !! make sure label responds to model, fill t
     for m = 1, #models do -- all model go
         g_set_gpu(m) -- pay attention to set gpu for :cuda() to move
         local model = models[m]
-        --print('model '..m..' init pos = '..model.pos)
-        if model.pos + params.seq_length > state.data:size(1) then
-            reset_state(model, m) -- model.pos = 1 -- for recursive
-            model.pos = 1
+        if poses[m] + params.seq_length > state.data:size(1) then
+            reset_state(model, m) -- poses[m] = 1 -- for recursive
+            poses[m] = 1
         end
         g_replace_table(model.s[0], model.start_s)
         for i = 1, params.seq_length do
-            local x =   torch.floor(state.data[model.pos] / jinzhi):cuda()
-            local x_r = torch.mod(state.data[model.pos]:int(), jinzhi):cuda()
+            local x =   torch.floor(state.data[poses[m]] / jinzhi):cuda()
+            local x_r = torch.mod(state.data[poses[m]]:int(), jinzhi):cuda()
             local y =   x_r
-            local y_r = torch.floor(state.data[model.pos + 1] / jinzhi):cuda()
+            local y_r = torch.floor(state.data[poses[m] + 1] / jinzhi):cuda()
             local s = model.s[i - 1]
             model.err[i], model.err_r[i], model.s[i] = unpack(model.rnns[i]:forward({x, y, s, x_r, y_r}))
-            model.pos = model.pos + 1
+            poses[m] = poses[m] + 1
         end
         g_replace_table(model.start_s, model.s[params.seq_length])
         err_sum = err_sum + model.err:mean() + model.err_r:mean()
-        --print('model '..m..' pass')
     end
-    return err_sum / #models
+    return err_sum / GPUs 
 end
 
 local function bp(models, state)
@@ -198,11 +199,11 @@ local function bp(models, state)
         local paramx  = model.paramx
         paramdx:zero() reset_ds(model)
         for i = params.seq_length, 1, -1 do
-            model.pos = model.pos - 1
-            local x = torch.floor(state.data[model.pos] / jinzhi):cuda()
-            local x_r = torch.mod(state.data[model.pos]:int(), jinzhi):cuda()
+            poses[m] = poses[m] - 1
+            local x = torch.floor(state.data[poses[m]] / jinzhi):cuda()
+            local x_r = torch.mod(state.data[poses[m]]:int(), jinzhi):cuda()
             local y =   x_r
-            local y_r = torch.floor(state.data[model.pos + 1] / jinzhi):cuda()
+            local y_r = torch.floor(state.data[poses[m] + 1] / jinzhi):cuda()
             local s = model.s[i - 1]
             local derr = transfer_data(torch.ones(1))
             local derr_r = transfer_data(torch.ones(1))
@@ -210,7 +211,7 @@ local function bp(models, state)
             g_replace_table(model.ds, tmp)
             --cutorch.synchronize()
         end
-        model.pos = model.pos + params.seq_length
+        poses[m] = poses[m] + params.seq_length
     end
     cutorch.synchronizeAll()
 
@@ -235,9 +236,8 @@ local function bp(models, state)
 
     sumparamdx:mul(1.0/GPUs)
     models[1].norm_dw = sumparamdx:norm()
-    local norm_dw = models[1].norm_dw
-    if norm_dw > params.max_grad_norm then
-        local shrink_factor = params.max_grad_norm / norm_dw
+    if models[1].norm_dw > params.max_grad_norm then
+        local shrink_factor = params.max_grad_norm / models[1].norm_dw
         sumparamdx:mul(shrink_factor)
     end
 
@@ -251,11 +251,13 @@ local function bp(models, state)
         local paramx = model.paramx
         paramx:copy(paramx_1)
     end
+
+    cutorch.synchronizeAll()
 end
 
 local function run_valid(model, state) -- models[1]
     print("run valid...")
-    g_set_gpu(1)
+    --g_set_gpu(1)
     g_replace_table(model.ds, model.start_s) -- for store start_s
     g_disable_dropout(model.rnns)
     local len = (state.data:size(1) - 1) / (params.seq_length)
@@ -280,11 +282,12 @@ local function run_valid(model, state) -- models[1]
     g_enable_dropout(model.rnns)
 
     g_replace_table(model.start_s, model.ds) -- save back to model.start_s
+    cutorch.synchronize()
     return torch.exp(perp / len)
 end
 
 local function run_test(model) -- models[1]
-    g_set_gpu(1)
+    --g_set_gpu(1)
     g_replace_table(model.ds, model.start_s) -- for store start_s
     g_disable_dropout(model.rnns)
     local perp = 0
@@ -304,6 +307,7 @@ local function run_test(model) -- models[1]
     print("Test set perplexity : " .. g_f3(torch.exp(perp / (len - 1))))
     g_enable_dropout(model.rnns)
     g_replace_table(model.start_s, model.ds) -- save back to model.start_s
+    cutorch.synchronize()
     return g_f3(torch.exp(perp / (len - 1)))
 end
 
@@ -318,7 +322,7 @@ local function datastateinit()
     print("data state init")
     for m = 1, #models do
         local model = models[m]
-        reset_state(model, m) model.pos = model.start_pos 
+        reset_state(model, m) poses[m] = start_poses[m] 
     end
 end
 local function data_prepare(mapx, mapy)
@@ -395,14 +399,15 @@ local function training(models, round)
             local test_perp = last_valid_perp -- final to run test
             checkpoint.savefile = "./models/" .. checkpoint.savefile ..".test"..test_perp.. ".model.t7"
             torch.save(checkpoint.savefile, checkpoint)
-            print("saving ".. checkpoint.savefile)
+            print("saved ".. checkpoint.savefile)
             if last_delete_file ~= nil then
                 print("delete last file: ".. last_delete_file.." for save storage!") io.popen("rm "..last_delete_file)
             end
             last_delete_file = checkpoint.savefile
 
             if params.lr < params.minlr then break end
-            cutorch.synchronizeAll()
+
+            cutorch.synchronize()
             collectgarbage()
         end
         
