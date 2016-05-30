@@ -189,6 +189,7 @@ local function fp(models, state) -- !! make sure label responds to model, fill t
 
     local err_sum = 0.0
     for m = 1, #models do
+        g_set_gpu(m) -- pay attention to set gpu for :cuda() to move
         local model = models[m]
         err_sum = err_sum + model.err:mean() + model.err_r:mean()
     end
