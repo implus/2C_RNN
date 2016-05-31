@@ -68,6 +68,7 @@ function g_make_deterministic(seed)
 end
 
 function g_set_gpu(id)
+    print(string.format("Using %s-th gpu", id))
     cutorch.setDevice(id)
     g_make_deterministic(1)
 end
