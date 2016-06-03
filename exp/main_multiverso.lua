@@ -197,12 +197,16 @@ local function bp(model, state)
         cutorch.synchronize()
     end
     state.pos = state.pos + params.seq_length
+
     model.norm_dw = paramdx:norm()
     if model.norm_dw > params.max_grad_norm then
         local shrink_factor = params.max_grad_norm / model.norm_dw
         paramdx:mul(shrink_factor)
     end
-    paramx:add(paramdx:mul(-params.lr))
+    speed:add({words_per_step, 0, 0, 0, 0})
+    tbh:add(paramdx:mul(-params.lr/multiverso.num_workers))
+    paramx:copy(tbh:get())
+    --paramx:add(paramdx:mul(-params.lr))
 end
 
 local function run_valid(model)
@@ -249,6 +253,9 @@ local function datastateinit(step_gap)
     print("data state init")
     local states = {state_train, state_valid, state_test}
     for _, state in pairs(states) do reset_state(model, state) end
+    -- adjust state.pos for multiverso training
+    state_train.pos = torch.floor(1 + multiverso.worker_id * step_gap)
+    print("worker: "..multiverso.worker_id.." state_train.pos = "..state_train.pos)
 end
 local function data_prepare(mapx, mapy)
     print("data prepare")
@@ -257,8 +264,6 @@ local function data_prepare(mapx, mapy)
     state_valid.data = transfer_data(ptb.validdataset2batch(vec_mapping(state_valid.vec, mapx, mapy, jinzhi), params.batch_size))
     state_test.data =  transfer_data(ptb.testdataset2batch(vec_mapping(state_test.vec, mapx, mapy,   jinzhi), params.batch_size))
 end
-
-
 
 local function training(model, round)
     -- if loading from file, these must be added
@@ -271,7 +276,7 @@ local function training(model, round)
     local beginning_time = torch.tic()
     local start_time = torch.tic()
     print("Starting training.")
-    local words_per_step = params.seq_length * params.batch_size 
+    words_per_step = params.seq_length * params.batch_size 
     local epoch_size = torch.floor(state_train.data:size(1) / params.seq_length)
     local perps
     local last_valid_perp = 11111111111111111111111111111
@@ -286,10 +291,11 @@ local function training(model, round)
         perps[step % epoch_size + 1] = perp
         step = step + 1
         bp(model, state_train)
-        total_cases = total_cases + words_per_step
+        --total_cases = total_cases + words_per_step
         epoch = step / epoch_size
         if step % torch.round(epoch_size / 10) == 10 then
-            local wps = torch.floor(total_cases / torch.toc(start_time))
+            --local wps = torch.floor(total_cases / torch.toc(start_time))
+            local wps  = torch.floor(speed:get()[1] / torch.toc(start_time))
             local since_beginning = g_d(torch.toc(beginning_time) / 60)
             -- lr decay by train perp
             local new_train_perp = torch.exp(perps:mean())
@@ -298,38 +304,42 @@ local function training(model, round)
             end
             last_train_perp = new_train_perp
 
-            print('epoch = ' .. g_f3(epoch) ..
-            ', train perp. = ' .. g_f3(torch.exp(perps:mean())) ..
-            ', wps = ' .. wps ..
-            ', dw:norm() = ' .. g_f3(model.norm_dw) ..
-            ', lr = ' ..  g_f3(params.lr) ..
-            ', since beginning = ' .. since_beginning .. ' mins.')
+            if multiverso.is_master then
+                print('epoch = ' .. g_f3(epoch) ..
+                ', train perp. = ' .. g_f3(torch.exp(perps:mean())) ..
+                ', wps = ' .. wps ..
+                ', dw:norm() = ' .. g_f3(model.norm_dw) ..
+                ', lr = ' ..  g_f3(params.lr) ..
+                ', since beginning = ' .. since_beginning .. ' mins.')
+            end
         end
         if step % epoch_size == 0 then
             -- first let's see one epoch change
             local new_valid_perp = run_valid(model)
-            if new_valid_perp > last_valid_perp + params.tolerance or epoch > params.max_epoch then  -- or params.lr < params.minlr  then --or step / epoch_size > 1.0 then -- !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! for fast check, later delete
+            if new_valid_perp > last_valid_perp + params.tolerance or epoch > params.max_epoch then  
                 params.lr = params.lr / params.decay
             end
             last_valid_perp = new_valid_perp
 
-            checkpoint.model    = model 
-            checkpoint.params   = params 
-            checkpoint.mapx     = mapx
-            checkpoint.mapy     = mapy
-            checkpoint.savefile = string.format('implus_round%d_epoch%.2f_%.2f', round, epoch, new_valid_perp)
-            last_checkpoint = checkpoint
+            if multiverso.is_master then
+                checkpoint.model    = model 
+                checkpoint.params   = params 
+                checkpoint.mapx     = mapx
+                checkpoint.mapy     = mapy
+                checkpoint.savefile = string.format('implus_round%d_epoch%.2f_%.2f', round, epoch, new_valid_perp)
+                last_checkpoint = checkpoint
 
             -- for save every epoch
-            print("running test...")
-            local test_perp = run_test(model)
-            checkpoint.savefile = "./models/" .. checkpoint.savefile ..".test"..test_perp.. ".model.t7"
-            torch.save(checkpoint.savefile, checkpoint)
-            print("saving ".. checkpoint.savefile)
-            if last_delete_file ~= nil then
-                print("delete last file: ".. last_delete_file.." for save storage!") io.popen("rm "..last_delete_file)
+                print("running test...")
+                local test_perp = run_test(model)
+                checkpoint.savefile = "./models/" .. checkpoint.savefile ..".test"..test_perp.. ".model.t7"
+                torch.save(checkpoint.savefile, checkpoint)
+                print("saving ".. checkpoint.savefile)
+                if last_delete_file ~= nil then
+                    print("delete last file: ".. last_delete_file.." for save storage!") io.popen("rm "..last_delete_file)
+                end
+                last_delete_file = checkpoint.savefile
             end
-            last_delete_file = checkpoint.savefile
 
             if params.lr < params.minlr then break end
         end
@@ -339,7 +349,7 @@ local function training(model, round)
             collectgarbage()
         end
     end
-    print("running test ...")
+    print("finish training round...")
 end
 
 
@@ -512,6 +522,18 @@ local function gao()
     if not path.exists('./models/') then lfs.mkdir('./models/') end
 
     traininit(model, 'model init')
+    tbh = multiverso.ArrayTableHandler:new(model.paramx:size(1))
+    speed = multiverso.ArrayTableHandler:new(5)
+    
+    if multiverso.is_master then
+        tbh:add(model.paramx)
+        speed:add({0, 0, 0, 0, 0})
+        multiverso.barrier()
+    else
+        multiverso.barrier()
+        model.paramx:copy(tbh:get()) -- make sure all the initial values are the same for each worker
+    end
+
     for round = 0, 10000 do -- 0 is first init mapx, mapy to run
         print("------------------------------- round "..round.." begin!! ---------------------------------")
         if round == 0 then
@@ -533,9 +555,11 @@ local function gao()
         end
 
         data_prepare(mapx, mapy)
-        datastateinit((state_train:size(1) - 1) / multiverso.num_workers)
+        datastateinit((state_train.original:size(1) - 1) / multiverso.num_workers)
         training(model, round)
     end
+
+    multiverso.shutdown()
 end
 
 gao()
