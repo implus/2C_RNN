@@ -25,7 +25,7 @@ const string unk = "<unk>";
 // note that we must make vocabulary == 793471, let cnt>=3 
 
 vector<vector<string> > trainvvs;
-const int each = 1;
+const int each = 99;
 
 int main(){
     ios::sync_with_stdio(false);
@@ -64,10 +64,10 @@ int main(){
 
 
     // 01. get train_xxx.txt
-    system("mkdir -p ../../dataset/1-billion-word-language-modeling-benchmark-r13output/split99/");
+    system("mkdir -p ../../dataset/1-billion-word-language-modeling-benchmark-r13output/");
     for (int f = 0; f < trainvvs.size(); f++){
         cerr<<"till now working on training file "<<f<<endl;
-        sprintf(buf, "../../dataset/1-billion-word-language-modeling-benchmark-r13output/split99/train_%02d.txt", f);
+        sprintf(buf, "../../dataset/1-billion-word-language-modeling-benchmark-r13output/train_%01d.txt", f);
         fstream trainfs(buf, ios::out);
         vector<string> &trainvs = trainvvs[f];
         for (int i = 0; i < trainvs.size(); i++){
@@ -101,9 +101,9 @@ int main(){
     assert(idx == (int)word2idx.size());
 
 
-    // 03. get test.txt
+    // 03. get test_0.txt
     cout<<"generate test.txt"<<endl;
-    fstream testfs("../../dataset/1-billion-word-language-modeling-benchmark-r13output/test.txt", ios::out);
+    fstream testfs("../../dataset/1-billion-word-language-modeling-benchmark-r13output/test_0.txt", ios::out);
     for(int i = 0; i < 1; i++){
         sprintf(buf, "../../dataset/1-billion-word-language-modeling-benchmark-r13output/heldout-monolingual.tokenized.shuffled/news.en.heldout-%05d-of-00050", i);
         cout<<buf<<" going"<<endl;
@@ -122,8 +122,8 @@ int main(){
     }
 
     // 04. get valid.txt
-    cout<<"generate valid.txt"<<endl;
-    fstream validfs("../../dataset/1-billion-word-language-modeling-benchmark-r13output/valid.txt", ios::out);
+    cout<<"generate valid_0.txt"<<endl;
+    fstream validfs("../../dataset/1-billion-word-language-modeling-benchmark-r13output/valid_0.txt", ios::out);
     for(int i = 1; i < 50; i++){
         sprintf(buf, "../../dataset/1-billion-word-language-modeling-benchmark-r13output/heldout-monolingual.tokenized.shuffled/news.en.heldout-%05d-of-00050", i);
         cout<<buf<<" going"<<endl;

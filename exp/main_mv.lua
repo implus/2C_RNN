@@ -167,10 +167,10 @@ local function fp(model, state) -- !! make sure label responds to model, fill th
         reset_state(model, state)
     end
     for i = 1, params.seq_length do
-        local x = torch.floor(state.data[state.pos] / jinzhi):cuda()
+        local x = torch.floor(state.data[state.pos] / jinzhi)
         local x_r = torch.mod(state.data[state.pos]:int(), jinzhi):cuda()
         local y =   x_r
-        local y_r = torch.floor(state.data[state.pos + 1] / jinzhi):cuda()
+        local y_r = torch.floor(state.data[state.pos + 1] / jinzhi)
         local s = model.s[i - 1]
         model.err[i], model.err_r[i], model.s[i] = unpack(model.rnns[i]:forward({x, y, s, x_r, y_r}))
         state.pos = state.pos + 1
@@ -186,10 +186,10 @@ local function bp(model, state)
     reset_ds(model)
     for i = params.seq_length, 1, -1 do
         state.pos = state.pos - 1
-        local x = torch.floor(state.data[state.pos] / jinzhi):cuda()
+        local x = torch.floor(state.data[state.pos] / jinzhi)
         local x_r = torch.mod(state.data[state.pos]:int(), jinzhi):cuda()
         local y =   x_r
-        local y_r = torch.floor(state.data[state.pos + 1] / jinzhi):cuda()
+        local y_r = torch.floor(state.data[state.pos + 1] / jinzhi)
         local s = model.s[i - 1]
         local derr = transfer_data(torch.ones(1))
         local derr_r = transfer_data(torch.ones(1))
@@ -204,7 +204,7 @@ local function bp(model, state)
         local shrink_factor = params.max_grad_norm / model.norm_dw
         paramdx:mul(shrink_factor)
     end
-    tbh:add(paramdx:mul(-params.lr/multiverso.num_workers))
+    tbh:add(paramdx:mul(-params.lr/ multiverso.num_workers))
     paramx:copy(tbh:get())
 
     infos:add({words_per_step, 0, 0, 0, 0})
@@ -212,6 +212,9 @@ local function bp(model, state)
 end
 
 local function run_valid(model)
+    local paramx  = model.paramx
+    paramx:copy(tbh:get())
+
     reset_state(model, state_valid)
     g_disable_dropout(model.rnns)
     local len = (state_valid.data:size(1) - 1) / (params.seq_length)
@@ -225,16 +228,19 @@ local function run_valid(model)
 end
 
 local function run_test(model)
+    local paramx  = model.paramx
+    paramx:copy(tbh:get())
+
     reset_state(model, state_test)
     g_disable_dropout(model.rnns)
     local perp = 0
     local len = state_test.data:size(1)
     g_replace_table(model.s[0], model.start_s)
     for i = 1, (len - 1), 1 do
-        local x = torch.floor(state_test.data[i] / jinzhi):cuda()
+        local x = torch.floor(state_test.data[i] / jinzhi)
         local x_r = torch.mod(state_test.data[i]:int(), jinzhi):cuda()
         local y =   x_r
-        local y_r = torch.floor(state_test.data[i + 1] / jinzhi):cuda()
+        local y_r = torch.floor(state_test.data[i + 1] / jinzhi)
         perp_tmp, perp_tmp_r, model.s[1] = unpack(model.rnns[1]:forward({x, y, model.s[0], x_r, y_r}))
         perp = perp + perp_tmp[1] + perp_tmp_r[1]
         g_replace_table(model.s[0], model.s[1])
@@ -259,9 +265,9 @@ end
 local function data_prepare(mapx, mapy)
     print("data prepare")
     check_conflict(mapx, mapy, params.vocab_size, params.vocab_code)
-    state_train.data = (ptb.traindataset2batch(vec_mapping(state_train.vec, mapx, mapy, jinzhi), params.batch_size))
-    state_valid.data = (ptb.validdataset2batch(vec_mapping(state_valid.vec, mapx, mapy, jinzhi), params.batch_size))
-    state_test.data =  (ptb.testdataset2batch(vec_mapping(state_test.vec, mapx, mapy,   jinzhi), params.batch_size))
+    state_train.data = transfer_data(ptb.traindataset2batch(vec_mapping(state_train.vec, mapx, mapy, jinzhi), params.batch_size))
+    state_valid.data = transfer_data(ptb.validdataset2batch(vec_mapping(state_valid.vec, mapx, mapy, jinzhi), params.batch_size))
+    state_test.data =  transfer_data(ptb.testdataset2batch(vec_mapping(state_test.vec, mapx, mapy,   jinzhi), params.batch_size))
 end
 
 local function training(model, round)
@@ -276,6 +282,7 @@ local function training(model, round)
     local start_time = torch.tic()
     print("Starting training.")
     words_per_step = params.seq_length * params.batch_size 
+    infos:add(-infos:get())
     local epoch_size = torch.floor(state_train.data:size(1) / params.seq_length)
     local perps
     local last_valid_perp = 11111111111111111111111111111
@@ -347,12 +354,12 @@ local function training(model, round)
         --if step % 33 == 0 then cutorch.synchronize() collectgarbage() end
     end
     print("finish training round, go test..")
-    -- run test
-    print("running test..."..multiverso.worker_id)
-    local test_perp = run_test(checkpoint.model)
 
     if multiverso.is_master then
-        checkpoint.savefile = "./models/" .. checkpoint.savefile ..".test"..test_perp.. ".model.t7"
+        -- run test
+        print("running test..."..multiverso.worker_id)
+        local test_perp = run_test(checkpoint.model)
+        checkpoint.savefile = checkpoint.savefile ..".test"..test_perp.. ".model.t7"
         torch.save(checkpoint.savefile, checkpoint)
         print("saving ".. checkpoint.savefile)
         multiverso.barrier()
@@ -377,10 +384,10 @@ local function updatebest_c(model, info, round, state)
     --for j = 1, 1 do
         g_replace_table(model.s[0], model.start_s)
         for i = 1, params.seq_length do
-            local x = torch.floor(state.data[state.pos] / jinzhi):cuda()
+            local x = torch.floor(state.data[state.pos] / jinzhi)
             local x_r = torch.mod(state.data[state.pos]:int(), jinzhi):cuda()
             local y = x_r
-            local y_r = torch.floor(state.data[state.pos + 1] / jinzhi):cuda()
+            local y_r = torch.floor(state.data[state.pos + 1] / jinzhi)
             local s = model.s[i - 1]
             model.err[i], model.err_r[i], model.s[i] = unpack(model.rnns[i]:forward({x, y, s, x_r, y_r}))
             local lsm = model.rnns[i]:findModules('nn.LogSoftMax')
@@ -603,13 +610,13 @@ local function gao()
     for round = 0, 10000 do -- 0 is first init mapx, mapy to run
         print("------------------------------- round "..round.." begin!! ---------------------------------")
         if round == 0 then
-            params.decay = 1.2
-            params.max_epoch     = 10
-            params.max_max_epoch = 44
+            params.decay = 1.15
+            params.max_epoch     = 2 --10
+            params.max_max_epoch = 4 --44
         else 
-            params.decay = 1.5
-            params.max_epoch     = 1
-            params.max_max_epoch = 10
+            params.decay = 1.2
+            params.max_epoch     = 2 
+            params.max_max_epoch = 4 --12
         end
         if round > 0 then
             model.paramx:copy(tbh:get())
