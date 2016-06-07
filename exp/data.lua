@@ -89,8 +89,8 @@ local function traindataset2batch(v, batch_size)
     x = replicate(x, batch_size)
     return x
 end
-local function traindataset(data_path)
-    local v = load_data(data_path .. "/train_0.txt", data_path)
+local function traindataset(data_path, id)
+    local v = load_data(data_path .. "/train_"..id..".txt", data_path)
     return v
 end
 
@@ -101,8 +101,8 @@ local function testdataset2batch(v, batch_size)
     x = x:resize(x:size(1), 1):expand(x:size(1), batch_size)
     return x
 end
-local function testdataset(data_path)
-    local v = load_data(data_path .. "/test_0.txt", data_path)
+local function testdataset(data_path, id)
+    local v = load_data(data_path .. "/test_"..id..".txt", data_path)
     return v
 end
 
@@ -112,8 +112,8 @@ local function validdataset2batch(v, batch_size)
     x = replicate(x, batch_size)
     return x
 end
-local function validdataset(data_path)
-    local v = load_data(data_path .. "/valid_0.txt", data_path)
+local function validdataset(data_path, id)
+    local v = load_data(data_path .. "/valid_"..id..".txt", data_path)
     return v
 end
 
