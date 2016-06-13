@@ -26,11 +26,11 @@ local tds = require('tds')
 local multiverso = require('multiverso')
 
 local params = {
-batch_size=20,
-seq_length=30, -- back to one element seq_length
-layers=2,
+batch_size=400,
+seq_length=20, -- back to one element seq_length
+layers=1,
 decay=1.2,
-rnn_size=1000,
+rnn_size=2048,
 dropout=0.5,
 init_weight=0.04,
 lr=1.0,
@@ -282,7 +282,12 @@ local function training(model, round)
     local start_time = torch.tic()
     print("Starting training.")
     words_per_step = params.seq_length * params.batch_size 
-    infos:add(-infos:get())
+    if multiverso.is_master then
+        infos:add(-infos:get())
+        multiverso.barrier()
+    else
+        multiverso.barrier()
+    end
     local epoch_size = torch.floor(state_train.data:size(1) / params.seq_length)
     local perps
     local last_valid_perp = 11111111111111111111111111111
@@ -299,7 +304,7 @@ local function training(model, round)
         bp(model, state_train)
         --total_cases = total_cases + words_per_step
         epoch = step / epoch_size
-        if step % torch.round(epoch_size / 10) == 10 then
+        if step % torch.round(epoch_size / 100) == 10 then
             --local wps = torch.floor(total_cases / torch.toc(start_time))
             local wps  = torch.floor(infos:get()[INFO_SPEED] / torch.toc(start_time))
             local since_beginning = g_d(torch.toc(beginning_time) / 60)
@@ -419,11 +424,29 @@ local function updatebest_c(model, info, round, state)
     print('output values of two tables probx and proby into files ./models/')
 
     local xfilename = './models/round'..round..'.probx.'..multiverso.worker_id..'.t7'
-    torch.save(xfilename, probx)
+    --torch.save(xfilename, probx)
+        print('write into '..xfilename)
+        local filex = io.open(xfilename, 'w')
+        for word  = 1, params.vocab_size do
+            for i = 1, params.vocab_code do
+                filex:write(' '..probx[word][i])
+            end
+            filex:write('\n')
+        end
+        filex:close()
     print('saving '..xfilename)
 
     local yfilename = './models/round'..round..'.proby.'..multiverso.worker_id..'.t7'
-    torch.save(yfilename, proby)
+    --torch.save(yfilename, proby)
+        print('write into '..yfilename)
+        local filey = io.open(yfilename, 'w')
+        for word  = 1, params.vocab_size do
+            for i = 1, params.vocab_code do
+                filey:write(' '..proby[word][i])
+            end
+            filey:write('\n')
+        end
+        filey:close()
     print('saving '..yfilename)
 
     -- wait for 4 files to be done
@@ -436,21 +459,28 @@ local function updatebest_c(model, info, round, state)
         local proby = torch.zeros(params.vocab_size, params.vocab_code)
         
         print('!!!!!!!!!!!! merge all loss matrix into one !!!!!!!!!!!!!!!!!!')
+        local cmdx = './merge ./models/round'..round..'.probx.t7'
+        local cmdy = './merge ./models/round'..round..'.proby.t7'
+        for w = 0, multiverso.num_workers - 1 do
+            local xfilename = './models/round'..round..'.probx.'..w..'.t7'
+            local yfilename = './models/round'..round..'.proby.'..w..'.t7'
+            cmdx = cmdx..' '..xfilename
+            cmdy = cmdy..' '..yfilename
+            print(cmdx)
+            print(cmdy)
+            local handle = io.popen(cmdx)
+            handle:close()
+            local handle = io.popen(cmdy)
+            handle:close()
+        end
+        --[[
         for w = 0, multiverso.num_workers - 1 do
             local xfilename = './models/round'..round..'.probx.'..w..'.t7'
             local px = torch.load(xfilename)
-            for i = 1, params.vocab_size do
-                for j = 1, params.vocab_code do
-                    probx[i][j] = probx[i][j] + px[i][j]
-                end
-            end
+            probx = probx + px
             local yfilename = './models/round'..round..'.proby.'..w..'.t7'
             local py = torch.load(yfilename)
-            for i = 1, params.vocab_size do
-                for j = 1, params.vocab_code do
-                    proby[i][j] = proby[i][j] + py[i][j]
-                end
-            end
+            proby = proby + py
         end
 
         local xfilename = './models/round'..round..'.probx.t7'
@@ -475,6 +505,9 @@ local function updatebest_c(model, info, round, state)
         end
         filey:close()
         -- finish file 
+        ]]
+        local xfilename = './models/round'..round..'.probx.t7'
+        local yfilename = './models/round'..round..'.proby.t7'
 
         print("round "..round.." file probx, proby saved! call c++ program to deal")
         local mapxyfilename = './models/round'..round..'.mapxy.t7'
@@ -612,11 +645,11 @@ local function gao()
         if round == 0 then
             params.decay = 1.15
             params.max_epoch     = 2 --10
-            params.max_max_epoch = 4 --44
+            params.max_max_epoch = 10 --44
         else 
             params.decay = 1.2
             params.max_epoch     = 2 
-            params.max_max_epoch = 4 --12
+            params.max_max_epoch = 6 --12
         end
         if round > 0 then
             model.paramx:copy(tbh:get())

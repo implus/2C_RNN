@@ -160,6 +160,51 @@ int main(){
     }
     cout<<"sum = ===== = "<<sum<<endl<<" tot number = "<<tot<<endl;
     
+    cerr<<"assign sortmapxy.txt"<<endl;
+    vector<string> vs;
+    vector<vector<string> > vvs;
+    for(unordered_map<string, int>::iterator it = word2idx.begin(); it != word2idx.end(); it++){
+        vs.push_back(it->first);
+    }
+    cerr<<"vocabulary size = "<<vs.size()<<endl;
+    int base = ceil(sqrt(1.0 * vs.size()));
+    cerr<<"base = "<<base<<endl;
+
+
+    int id = 0;
+    sort(vs.begin(), vs.end());
+
+    for(int i = 0; i < base; i++){
+        vvs.push_back(vector<string>());
+        for(int j = 0; j < base; j++){
+            if(id >= vs.size()) break;
+            vvs[i].push_back(vs[id++]);
+        }
+    }
+
+    for(int i = 0; i < base; i++){
+        vector<string>& lx = vvs[i]; 
+        for(int j = 0; j < lx.size(); j++){
+            reverse(lx[j].begin(), lx[j].end());
+        }
+        sort(lx.begin(), lx.end());
+    }
+
+    // mapping
+    sprintf(buf, "../../dataset/1-billion-word-language-modeling-benchmark-r13output/sortmapxy.txt");
+    fstream fmap(buf, ios::out);
+    for(int i = 0; i < base; i++){
+        for(int j = 0; j < base; j++){
+            if(j >= vvs[i].size()) fmap << "0 ";
+            else {
+                string t = vvs[i][j];
+                reverse(t.begin(), t.end());
+                fmap << word2idx[t] << " ";
+            }
+        }
+        fmap << "\n";
+    }
+    assert(idx == (int)word2idx.size());
     
     return 0;
 }
