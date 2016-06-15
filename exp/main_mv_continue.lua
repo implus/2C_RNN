@@ -624,7 +624,11 @@ local function gao()
     state_test  = {original = ptb.testdataset2batch(test_vec,   params.batch_size), vec = test_vec,  }
     if not path.exists('./models/') then lfs.mkdir('./models/') end
 
-    traininit(model, 'model init')
+    --traininit(model, 'model init')
+    local check = torch.load('./models/implus_round1_epoch1.00_89.19.model.t7')
+    model = check.model
+    mapx  = check.mapx
+    mapy  = check.mapy
     tbh = multiverso.ArrayTableHandler:new(model.paramx:size(1))
     infos = multiverso.ArrayTableHandler:new(5)
     mapx_tbh = multiverso.ArrayTableHandler:new(#mapx)
@@ -640,7 +644,7 @@ local function gao()
         model.paramx:copy(tbh:get()) -- make sure all the initial values are the same for each worker
     end
 
-    for round = 0, 10000 do -- 0 is first init mapx, mapy to run
+    for round = 1, 10000 do -- 0 is first init mapx, mapy to run
         print("------------------------------- round "..round.." begin!! ---------------------------------")
         if round == 0 then
             params.decay = 1.15
@@ -651,7 +655,7 @@ local function gao()
             params.max_epoch     = 2 
             params.max_max_epoch = 6 --12
         end
-        if round > 0 then
+        if round > 1 then
             model.paramx:copy(tbh:get())
             updatebest_c(model, "new technique!", round, state_train)
             multiverso.barrier()
