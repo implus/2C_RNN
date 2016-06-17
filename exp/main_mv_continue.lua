@@ -464,15 +464,15 @@ local function updatebest_c(model, info, round, state)
         for w = 0, multiverso.num_workers - 1 do
             local xfilename = './models/round'..round..'.probx.'..w..'.t7'
             local yfilename = './models/round'..round..'.proby.'..w..'.t7'
-            cmdx = cmdx..' '..xfilename
-            cmdy = cmdy..' '..yfilename
-            print(cmdx)
-            print(cmdy)
-            local handle = io.popen(cmdx)
-            handle:close()
-            local handle = io.popen(cmdy)
-            handle:close()
         end
+        cmdx = cmdx..' '..xfilename
+        cmdy = cmdy..' '..yfilename
+        print(cmdx)
+        print(cmdy)
+        local handle = io.popen(cmdx)
+        handle:close()
+        local handle = io.popen(cmdy)
+        handle:close()
         --[[
         for w = 0, multiverso.num_workers - 1 do
             local xfilename = './models/round'..round..'.probx.'..w..'.t7'
