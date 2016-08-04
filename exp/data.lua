@@ -55,7 +55,8 @@ local function load_data(fname, data_path)
     print(string.format("Loading %s, size of data = %d", fname, #data))
 
     if #mapx == 0 or #mapy == 0 then
-        local filename = string.format('%s/sortmapxy.txt', data_path)
+        --local filename = string.format('%s/sortmapxy.txt', data_path)
+        local filename = './models/round4.mapxy.t7'
         print('load '..filename..' mapxy ')
         fmapxy = io.open(filename, 'r')
         local row = 1 
@@ -65,9 +66,10 @@ local function load_data(fname, data_path)
             str = stringx.split(str)
             for col = 1, #str do
                 local w = tonumber(str[col])
-                if w == 0 then break end
-                mapx[w] = row
-                mapy[w] = col
+                if w > 0 then 
+                    mapx[w] = row
+                    mapy[w] = col
+                end
             end
             row = row + 1
         end

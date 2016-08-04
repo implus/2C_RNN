@@ -207,7 +207,7 @@ local function bp(model, state)
     tbh:add(paramdx:mul(-params.lr/ multiverso.num_workers))
     paramx:copy(tbh:get())
 
-    infos:add({words_per_step, 0, 0, 0, 0})
+    infos:add({words_per_step, 0, 0, 0, 0, 0,0,0,0,0})
     --paramx:add(paramdx:mul(-params.lr))
 end
 
@@ -265,9 +265,13 @@ end
 local function data_prepare(mapx, mapy)
     print("data prepare")
     check_conflict(mapx, mapy, params.vocab_size, params.vocab_code)
+    -- clear first
+    state_train.data = torch.CudaTensor()
+    state_valid.data = torch.CudaTensor()
+    state_test.data  = torch.CudaTensor()
     state_train.data = transfer_data(ptb.traindataset2batch(vec_mapping(state_train.vec, mapx, mapy, jinzhi), params.batch_size))
     state_valid.data = transfer_data(ptb.validdataset2batch(vec_mapping(state_valid.vec, mapx, mapy, jinzhi), params.batch_size))
-    state_test.data =  transfer_data(ptb.testdataset2batch(vec_mapping(state_test.vec, mapx, mapy,   jinzhi), params.batch_size))
+    state_test.data  = transfer_data(ptb.testdataset2batch(vec_mapping(state_test.vec, mapx, mapy,   jinzhi), params.batch_size))
 end
 
 local function training(model, round)
@@ -284,10 +288,9 @@ local function training(model, round)
     words_per_step = params.seq_length * params.batch_size 
     if multiverso.is_master then
         infos:add(-infos:get())
-        multiverso.barrier()
-    else
-        multiverso.barrier()
     end
+    multiverso.barrier()
+
     local epoch_size = torch.floor(state_train.data:size(1) / params.seq_length)
     local perps
     local last_valid_perp = 11111111111111111111111111111
@@ -295,6 +298,8 @@ local function training(model, round)
     local last_checkpoint = {} local checkpoint = {}
     local last_delete_file
     local step = 0 local epoch = 0
+
+    print('epoch_size for '..multiverso.worker_id..' = '..epoch_size)
 
     while epoch < params.max_max_epoch do
         local perp = fp(model, state_train)
@@ -347,19 +352,22 @@ local function training(model, round)
                     print("delete last file: ".. last_delete_file.." for save storage!") io.popen("rm "..last_delete_file)
                 end
                 last_delete_file = checkpoint.savefile
-
+            --[[
                 multiverso.barrier()
             else
                 multiverso.barrier() -- one epoch, wait go together next
+            ]]
             end
 
             if params.lr < params.minlr then break end
         end
         
         if step % 33 == 0 then cutorch.synchronize() collectgarbage() end
+
     end
     print("finish training round, go test..")
 
+    --[[
     if multiverso.is_master then
         -- run test
         print("running test..."..multiverso.worker_id)
@@ -367,10 +375,10 @@ local function training(model, round)
         checkpoint.savefile = checkpoint.savefile ..".test"..test_perp.. ".model.t7"
         torch.save(checkpoint.savefile, checkpoint)
         print("saving ".. checkpoint.savefile)
-        multiverso.barrier()
-    else
-        multiverso.barrier()
     end
+    multiverso.barrier()
+    ]]
+    multiverso.barrier()
 end
 
 
@@ -577,7 +585,7 @@ end
 
 
 local function gao()
-    --g_init_gpu({}) -- gpu is nil, then we use the first gpu by default
+    -- g_init_gpu({}) -- gpu is nil, then we use the first gpu by default
     multiverso.init()
     g_set_gpu(multiverso.worker_id() + 1)
     multiverso.num_workers = multiverso.num_workers()
@@ -587,6 +595,7 @@ local function gao()
     if arg[1] == nil then print("useage: mpirun -np 4 th main_c.lua ../../dataset/big-data/xx/ 200(setting base to 200, if no, sqrt(vocab_size) will be default) 2>&1 | tee log.txt") return end
     data_path = arg[1]
     print('data_path:'..data_path)
+
 
     vocab = 0
     for line in io.lines(data_path.."/idx2word.txt") do
@@ -606,6 +615,8 @@ local function gao()
     print("base = "..base)
     params.vocab_size = vocab
     params.vocab_code = base
+    local check = torch.load('./models/implus_round3_epoch3.00_70.37.model.t7')
+    params = check.params
 
     train_vec = ptb.traindataset(data_path, multiverso.worker_id + 1) -- 1, 2, 3, 4 (0 is all data)
     valid_vec = ptb.validdataset(data_path, multiverso.worker_id + 1)
@@ -625,48 +636,48 @@ local function gao()
     if not path.exists('./models/') then lfs.mkdir('./models/') end
 
     --traininit(model, 'model init')
-    local check = torch.load('./models/implus_round1_epoch6.00_73.37.model.t7.test70.732.model.t7')
-    --model = check.model
-    traininit(model, 'model init')
-    mapx  = check.mapx
-    mapy  = check.mapy
+    model = check.model
+    --mapx  = check.mapx
+    --mapy  = check.mapy
     tbh = multiverso.ArrayTableHandler:new(model.paramx:size(1))
-    infos = multiverso.ArrayTableHandler:new(5)
+    infos = multiverso.ArrayTableHandler:new(10)
     mapx_tbh = multiverso.ArrayTableHandler:new(#mapx)
     mapy_tbh = multiverso.ArrayTableHandler:new(#mapy)
     -- infos[0] = speed cnt;
     
     if multiverso.is_master then
         tbh:add(model.paramx)
-        infos:add({0, 0, 0, 0, 0})
+        infos:add({0, 0, 0, 0, 0, 0,0,0,0,0})
         multiverso.barrier()
     else
         multiverso.barrier()
         model.paramx:copy(tbh:get()) -- make sure all the initial values are the same for each worker
     end
 
-    for round = 2, 10000 do -- 0 is first init mapx, mapy to run
+    for round = 4, 10000 do -- 0 is first init mapx, mapy to run
         print("------------------------------- round "..round.." begin!! ---------------------------------")
         if round == 0 then
             params.decay = 1.15
             params.max_epoch     = 2 --10
             params.max_max_epoch = 10 --44
         else 
-            params.decay = 1.2
+            params.decay = 2.0
             params.max_epoch     = 2 
-            params.max_max_epoch = 6 --12
+            params.max_max_epoch = 5 --12
         end
-        if round > 2 then
+        if round > 4 then
             model.paramx:copy(tbh:get())
+            -- if round == 4 then data_prepare(mapx, mapy) end
             updatebest_c(model, "new technique!", round, state_train)
             multiverso.barrier()
         end
+        collectgarbage()
 
         data_prepare(mapx, mapy) -- prepare data into batch_size with mapx mapy in cpu
         datastateinit()          -- init from 0
         training(model, round)
+        collectgarbage()
     end
-
     multiverso.shutdown()
 end
 
