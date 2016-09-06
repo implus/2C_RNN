@@ -24,9 +24,9 @@ local ptb = require('data')
 local tds = require('tds')
 
 
-local params = {batch_size=100,
+local params = {batch_size=20,
 seq_length=30, -- back to one element seq_length
-layers=2,
+layers=1,
 decay=1.2,
 rnn_size=1000,
 dropout=0.5,
@@ -72,10 +72,8 @@ local function lstm(x, x_r, prev_c, prev_h )
     local next_h           = nn.CMulTable()({out_gate, nn.Tanh()(next_c)})
 
 -- new _r
-    local i2hnn_clone = table.unpack(g_cloneManyTimes(i2hnn, 1))
-    local h2hnn_clone = table.unpack(g_cloneManyTimes(h2hnn, 1))
-    local i2h_r = i2hnn_clone(x_r)
-    local h2h_r = h2hnn_clone(next_h)
+    local i2h_r = i2hnn(x_r)
+    local h2h_r = h2hnn(next_h)
     local gates_r = nn.CAddTable()({i2h_r, h2h_r})
 
     local reshaped_gates_r = nn.Reshape(4, params.rnn_size)(gates_r)
@@ -224,14 +222,51 @@ local function run_test(model)
     local perp = 0
     local len = state_test.data:size(1)
     g_replace_table(model.s[0], model.start_s)
+
+    local fw = io.open('PPLtest12.txt', 'w')
+
+    local lox, loy, begin = 1
     for i = 1, (len - 1), 1 do
         local x = torch.floor(state_test.data[i] / jinzhi)
         local x_r = torch.mod(state_test.data[i]:int(), jinzhi):cuda()
         local y =   x_r
         local y_r = torch.floor(state_test.data[i + 1] / jinzhi)
         perp_tmp, perp_tmp_r, model.s[1] = unpack(model.rnns[1]:forward({x, y, model.s[0], x_r, y_r}))
+
+        local lsm = model.rnns[1]:findModules('nn.LogSoftMax')
+        assert(#lsm == 2)
+        loy = lsm[1].output
+        loy = torch.DoubleTensor(loy:size()):copy(loy)
+
+        if i > 1 then
+            -- now lox and loy is good
+            -- record log's value
+            --print('state original = ', state_test.original[i])
+            local p = state_test.original[i][1]
+            --print('p = ', p, 'type(p) = ', type(p))
+            --print('mapx[p] = ', mapx[p], 'mapy[p] = ', mapy[p])
+            local word = idx2word[p]
+            local loxm = lox[1][mapx[p]]
+            local loym = loy[1][mapy[p]]
+            local prob = loxm + loym
+            print(string.format('%s:%.12f\t', word, prob))
+            if begin == 1 then
+                begin = 0
+                fw:write(string.format('%s:%.12f', word, prob))
+            else
+                fw:write(string.format('\t%s:%.12f', word, prob))
+            end
+            if p == 2 then
+                begin = 1
+                fw:write('\n')
+                print('\n')
+            end
+        end
+
         perp = perp + perp_tmp[1] + perp_tmp_r[1]
         g_replace_table(model.s[0], model.s[1])
+        lox = lsm[2].output
+        lox = torch.DoubleTensor(lox:size()):copy(lox)
     end
     print("Test set perplexity : " .. g_f3(torch.exp(perp / (len - 1))))
     g_enable_dropout(model.rnns)
@@ -247,14 +282,15 @@ local function traininit(model, str)
 end
 local function datastateinit()
     print("data state init")
-    local states = {state_train, state_valid, state_test}
+    local states = {state_test}
+    --{state_train, state_valid, state_test}
     for _, state in pairs(states) do reset_state(model, state) end
 end
 local function data_prepare(mapx, mapy)
     print("data prepare")
     check_conflict(mapx, mapy, params.vocab_size, params.vocab_code)
-    state_train.data = transfer_data(ptb.traindataset2batch(vec_mapping(state_train.vec, mapx, mapy, jinzhi), params.batch_size))
-    state_valid.data = transfer_data(ptb.validdataset2batch(vec_mapping(state_valid.vec, mapx, mapy, jinzhi), params.batch_size))
+    --state_train.data = transfer_data(ptb.traindataset2batch(vec_mapping(state_train.vec, mapx, mapy, jinzhi), params.batch_size))
+    --state_valid.data = transfer_data(ptb.validdataset2batch(vec_mapping(state_valid.vec, mapx, mapy, jinzhi), params.batch_size))
     state_test.data =  transfer_data(ptb.testdataset2batch(vec_mapping(state_test.vec, mapx, mapy,   jinzhi), params.batch_size))
 end
 
@@ -464,9 +500,10 @@ end
 
 
 local function gao()
-    if arg[1] == nil then print("useage: th main_c.lua ../../dataset/big-data/xx/ gpuid(1) 200(setting base to 200, if no, sqrt(vocab_size) will be default)  2>&1 | tee log.txt") return end
+    g_init_gpu({}) -- gpu is nil, then we use the first gpu by default
+    if arg[1] == nil then print("useage: th main_c.lua ../../dataset/big-data/xx/ 200(setting base to 200, if no, sqrt(vocab_size) will be default) 2>&1 | tee log.txt") return end
     data_path = arg[1]
-    g_init_gpu({tonumber(arg[2])}) -- gpu is nil, then we use the first gpu by default
+    local check_point = torch.load('./models/implus_round3_epoch3.80_67.37.test67.366250855055.model.t7')
 
     vocab = 0
     for line in io.lines(data_path.."/idx2word.txt") do
@@ -474,23 +511,23 @@ local function gao()
     end
     print("vacab = "..vocab)
     local sqrt = math.ceil(math.sqrt(vocab))
-    if arg[3] ~= nil then
-        base  = tonumber(arg[3])
+    if arg[2] ~= nil then
+        base  = tonumber(arg[2])
         if base < sqrt or base > jinzhi then
             print("you setting base is too small, please set at least ", sqrt, " at most ", jinzhi)
-        else
-            base = sqrt
+            return
         end
     else
         base  = sqrt
     end
     print("base = "..base)
+    params = check_point.params
     params.vocab_size = vocab
     params.vocab_code = base
 
-    train_vec = ptb.traindataset(data_path, 0)
-    valid_vec = ptb.validdataset(data_path, 0)
-    test_vec  = ptb.testdataset(data_path,  0)
+    --train_vec = ptb.traindataset(data_path)
+    --valid_vec = ptb.validdataset(data_path)
+    test_vec  = ptb.testdataset(data_path, 0)
     idx2word    = ptb.idx2word
     idx2cnt     = ptb.idx2cnt
     check_conflict = ptb.check_conflict
@@ -500,20 +537,27 @@ local function gao()
     -- print("we use random map to init mapx, mapy") randommapxy(vocab, base)
     check_conflict(mapx, mapy, vocab, base)
 
-    state_train = {original = ptb.traindataset2batch(train_vec, params.batch_size), vec = train_vec, }
-    state_valid = {original = ptb.validdataset2batch(valid_vec, params.batch_size), vec = valid_vec, }
+    --state_train = {original = ptb.traindataset2batch(train_vec, params.batch_size), vec = train_vec, }
+    --state_valid = {original = ptb.validdataset2batch(valid_vec, params.batch_size), vec = valid_vec, }
     state_test  = {original = ptb.testdataset2batch(test_vec,   params.batch_size), vec = test_vec,  }
     if not path.exists('./models/') then lfs.mkdir('./models/') end
 
+    model = check_point.model
+    mapx  = check_point.mapx
+    mapy  = check_point.mapy
+    data_prepare(mapx, mapy)
+    datastateinit()
+    run_test(model)
+
+    --[[
     traininit(model, 'model init')
     for round = 0, 10000 do -- 0 is first init mapx, mapy to run
         print("------------------------------- round "..round.." begin!! ---------------------------------")
         if round == 0 then
             params.decay = 1.2
             params.max_epoch     = 10
-            params.max_max_epoch = 30
+            params.max_max_epoch = 44
         else 
-            params.start_lr = params.start_lr * 0.9
             params.decay = 1.5
             params.max_epoch     = 1
             params.max_max_epoch = 10
@@ -526,6 +570,7 @@ local function gao()
         datastateinit()
         training(model, round)
     end
+    ]]
 end
 
 gao()

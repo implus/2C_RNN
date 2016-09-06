@@ -55,8 +55,8 @@ local function load_data(fname, data_path)
     print(string.format("Loading %s, size of data = %d", fname, #data))
 
     if #mapx == 0 or #mapy == 0 then
-        --local filename = string.format('%s/sortmapxy.txt', data_path)
-        local filename = './models/round4.mapxy.t7'
+        local filename = string.format('%s/sortmapxy.txt', data_path)
+        --local filename = './models/round4.mapxy.t7'
         print('load '..filename..' mapxy ')
         fmapxy = io.open(filename, 'r')
         local row = 1 
@@ -73,6 +73,22 @@ local function load_data(fname, data_path)
             end
             row = row + 1
         end
+    end
+    if #idx2word == 0 then
+        local f = string.format('%s/idx2word.txt', data_path)
+        print('load '..f..' for vaocab')
+        fr = io.open(f, 'r')
+        local id = 0
+        while true do
+            local str = fr:read()
+            if str == nil then break end
+            id = id + 1
+            if str == '<S>' then str = '<s>'
+            elseif str == '</S>' then  str = '</s>'
+            end
+            idx2word[id] = str
+        end
+        print('word vocab = ', #idx2word)
     end
 
 
