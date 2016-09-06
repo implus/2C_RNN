@@ -2,4 +2,8 @@
 */*.t7
 log*
 */log*
+exp_en/models/*
+exp_fr/models/*
+exp_en/data/*
+exp_fr/data/*
 
